@@ -3,21 +3,23 @@ package qemu
 import (
 	"errors"
 	"fmt"
-	"log"
-	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-	"syscall"
-
 	"github.com/beringresearch/macpine/utils"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
+	"log"
+	"net"
+	"net/url"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
 )
 
 type MachineConfig struct {
@@ -46,14 +48,14 @@ func (c *MachineConfig) Exec(cmd string, root bool) error {
 	host := "localhost:" + c.SSHPort
 	user := c.SSHUser
 	pwd := c.SSHPassword
-	if root && user != "root" {
-		user = "root"
-		if c.RootPassword == nil {
-			pwd = "root"
-		} else {
-			pwd = *c.RootPassword
-		}
-	}
+	//if root && user != "root" {
+	//	user = "root"
+	//	if c.RootPassword == nil {
+	//		pwd = "root"
+	//	} else {
+	//		pwd = *c.RootPassword
+	//	}
+	//}
 	cred, err := utils.GetCredential(pwd)
 	if err != nil {
 		return err
@@ -85,15 +87,46 @@ func (c *MachineConfig) Exec(cmd string, root bool) error {
 		}
 	}
 
-	var conn *ssh.Client
+	// Number of attempts and delay between them
+	maxRetries := 3
+	retryDelay := 30 * time.Second
 
-	conn, err = ssh.Dial("tcp", host, conf)
-	if err != nil {
-		return err
+	var sshClient *ssh.Client
+	for i := 0; i < maxRetries; i++ {
+		// Set up the TCP connection with a timeout
+		dialer := net.Dialer{
+			Timeout: 60 * time.Second, // Your desired timeout here
+		}
+		tcpConn, err := dialer.Dial("tcp", host)
+		if err != nil {
+			if i == maxRetries-1 {
+				return err
+			}
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		// Start the SSH handshake
+		conn, chans, reqs, err := ssh.NewClientConn(tcpConn, host, conf)
+		if err != nil {
+			if i == maxRetries-1 {
+				return err
+			}
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		// Create the new SSH client
+		sshClient = ssh.NewClient(conn, chans, reqs)
+		break
 	}
-	defer conn.Close()
 
-	session, err := conn.NewSession()
+	if sshClient == nil {
+		return errors.New("failed to establish SSH connection after multiple retries")
+	}
+	defer sshClient.Close()
+
+	session, err := sshClient.NewSession()
 	if err != nil {
 		return err
 	}
@@ -360,7 +393,7 @@ func (c *MachineConfig) Start() error {
 
 	cpuType := map[string]string{
 		"aarch64":      "cortex-a72",
-		"x86_64":       "qemu64,+avx,+avx2",
+		"x86_64":       "qemu64",
 		"x86_64_host":  "host" + hugePages,
 		"aarch64_host": "host"}
 
@@ -396,6 +429,7 @@ func (c *MachineConfig) Start() error {
 		"-nographic",
 		"-netdev", exposedPorts,
 		"-device", "e1000,netdev=net0,mac=" + c.MACAddress,
+		"-cdrom", filepath.Join(c.Location, "cidata.iso"),
 		"-pidfile", filepath.Join(c.Location, "alpine.pid"),
 		"-chardev", "socket,id=char-serial,path=" + filepath.Join(c.Location,
 			"alpine.sock") + ",server=on,wait=off,logfile=" + filepath.Join(c.Location, "alpine.log"),
@@ -427,6 +461,7 @@ func (c *MachineConfig) Start() error {
 	cmd.Stderr = os.Stderr
 
 	log.Println("booting " + c.Alias)
+	//log.Printf("cmd %v", cmd)
 	err = cmd.Run()
 	if err != nil {
 		c.Stop()
@@ -435,7 +470,7 @@ func (c *MachineConfig) Start() error {
 	}
 
 	log.Println("awaiting ssh server...")
-	err = c.Exec("hwclock -s", true) // root=true i.e. run as root
+	err = c.Exec("sudo hwclock -s", true) // root=true i.e. run as root
 	if err != nil {
 		c.Stop()
 		c.CleanPIDFile()
@@ -478,10 +513,12 @@ func (c *MachineConfig) Launch() error {
 		return err
 	}
 
-	imageURL := utils.GetImageURL(c.Image)
+	parsedUrl, _ := url.Parse(c.Image)
+	imageName := path.Base(parsedUrl.Path)
+	c.Image = imageName
 
 	if _, err := os.Stat(filepath.Join(cacheDir, c.Image)); errors.Is(err, os.ErrNotExist) {
-		err = utils.DownloadFile(filepath.Join(cacheDir, c.Image), imageURL)
+		err = utils.DownloadFile(filepath.Join(cacheDir, c.Image), parsedUrl.String())
 		if err != nil {
 			return errors.New("unable to download " + c.Image + " for " + c.Arch + ": " + err.Error())
 		}
@@ -502,6 +539,9 @@ func (c *MachineConfig) Launch() error {
 	if err != nil {
 		return err
 	}
+
+	//TODO cloud-init, expose this via args
+	_, err = utils.CopyFile("/Users/kyzrfranz/koding/saas/infra/playground/k3s/cidata.iso", filepath.Join(targetDir, "cidata.iso"))
 
 	_, err = utils.CopyFile(filepath.Join(cacheDir, c.Image), filepath.Join(targetDir, c.Image))
 	if err != nil {

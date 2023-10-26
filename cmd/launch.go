@@ -47,9 +47,9 @@ func includeLaunchFlags(cmd *cobra.Command) {
 func CorrectArguments(imageVersion string, machineArch string, machineCPU string,
 	machineMemory string, machineDisk string, sshPort string, machinePort string) error {
 
-	if !utils.StringSliceContains([]string{"alpine_3.16.0", "alpine_3.16.0_lxd", "debian_11.3.0"}, imageVersion) {
-		return errors.New("unsupported image. only -i alpine_3.16.0 | debian_11.3.0 are currently available")
-	}
+	//if !utils.StringSliceContains([]string{"alpine_3.16.0", "alpine_3.16.0_lxd", "debian_11.3.0"}, imageVersion) {
+	//	return errors.New("unsupported image. only -i alpine_3.16.0 | debian_11.3.0 are currently available")
+	//}
 
 	if machineArch != "" {
 		if machineArch != "aarch64" && machineArch != "x86_64" {
@@ -150,7 +150,7 @@ func launch(cmd *cobra.Command, args []string) {
 
 	machineConfig := qemu.MachineConfig{
 		Alias:       machineName,
-		Image:       imageVersion + "-" + machineArch + ".qcow2",
+		Image:       imageVersion, //+ "-" + machineArch + ".qcow2",
 		Arch:        machineArch,
 		CPU:         machineCPU,
 		Memory:      machineMemory,
@@ -159,8 +159,8 @@ func launch(cmd *cobra.Command, args []string) {
 		Port:        machinePort,
 		SSHPort:     sshPort,
 		MACAddress:  macAddress,
-		SSHUser:     "root",
-		SSHPassword: "raw::root",
+		SSHUser:     "ubuntu",
+		SSHPassword: "raw::ubuntu",
 		Tags:        []string{},
 	}
 	machineConfig.Location = filepath.Join(userHomeDir, ".macpine", machineConfig.Alias)
